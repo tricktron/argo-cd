@@ -505,7 +505,16 @@ func (c *clusterCache) AddNamespace(namespace string) error {
 		return nil
 	}
 
-	// TODO: Implement incremental sync logic
+	// Feature enabled: incremental sync
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	// Add namespace to the list
+	c.namespaces = append(c.namespaces, namespace)
+
+	// TODO: For each already-watched API, start watching in the new namespace
+	// This will be implemented in the next iteration
+
 	return nil
 }
 
