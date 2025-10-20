@@ -127,6 +127,8 @@ type ClusterCache interface {
 	GetGVKParser() *managedfields.GvkParser
 	// Invalidate cache and executes callback that optionally might update cache settings
 	Invalidate(opts ...UpdateSettingsFunc)
+	// AddNamespace incrementally syncs a new namespace to the cluster cache if incremental sync is enabled, otherwise falls back to full invalidation
+	AddNamespace(namespace string) error
 	// FindResources returns resources that matches given list of predicates from specified namespace or everywhere if specified namespace is empty
 	FindResources(namespace string, predicates ...func(r *Resource) bool) map[kube.ResourceKey]*Resource
 	// IterateHierarchyV2 iterates resource tree starting from the specified top level resources and executes callback for each resource in the tree.
@@ -234,6 +236,9 @@ type clusterCache struct {
 	namespaces       []string
 	clusterResources bool
 	settings         Settings
+
+	// incrementalNamespaceSync enables incremental namespace syncing instead of full cache invalidation
+	incrementalNamespaceSync bool
 
 	handlersLock                sync.Mutex
 	handlerKey                  uint64
@@ -488,6 +493,20 @@ func (c *clusterCache) Invalidate(opts ...UpdateSettingsFunc) {
 	c.apisMeta = nil
 	c.namespacedResources = nil
 	c.log.Info("Invalidated cluster")
+}
+
+// AddNamespace incrementally syncs a new namespace to the cluster cache if incremental sync is enabled,
+// otherwise falls back to full invalidation
+func (c *clusterCache) AddNamespace(namespace string) error {
+	if !c.incrementalNamespaceSync {
+		c.Invalidate(func(cache *clusterCache) {
+			cache.namespaces = append(cache.namespaces, namespace)
+		})
+		return nil
+	}
+
+	// TODO: Implement incremental sync logic
+	return nil
 }
 
 // clusterCacheSync's lock should be held before calling this method
