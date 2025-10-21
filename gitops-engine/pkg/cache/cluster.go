@@ -505,15 +505,58 @@ func (c *clusterCache) AddNamespace(namespace string) error {
 		return nil
 	}
 
-	// Feature enabled: incremental sync
 	c.lock.Lock()
-	defer c.lock.Unlock()
-
-	// Add namespace to the list
 	c.namespaces = append(c.namespaces, namespace)
 
-	// TODO: For each already-watched API, start watching in the new namespace
-	// This will be implemented in the next iteration
+	client, err := c.kubectl.NewDynamicClient(c.config)
+	if err != nil {
+		c.lock.Unlock()
+		return fmt.Errorf("failed to create dynamic client: %w", err)
+	}
+
+	var apisToSync []kube.APIResourceInfo
+	for _, apiResource := range c.apiResources {
+		if gk := apiResource.GroupKind; c.namespacedResources[gk] {
+			apisToSync = append(apisToSync, apiResource)
+		}
+	}
+
+	c.lock.Unlock()
+
+	for _, api := range apisToSync {
+		resClient := client.Resource(api.GroupVersionResource).Namespace(namespace)
+
+		c.lock.Lock()
+		if meta, exists := c.apisMeta[api.GroupKind]; exists {
+			ctx, cancel := context.WithCancel(context.Background())
+			meta.watchCancel()
+			meta.watchCancel = cancel
+			c.apisMeta[api.GroupKind] = meta
+			c.lock.Unlock()
+
+			resourceVersion, err := c.listResources(ctx, resClient, func(listPager *pager.ListPager) error {
+				return listPager.EachListItem(context.Background(), metav1.ListOptions{}, func(obj runtime.Object) error {
+					if un, ok := obj.(*unstructured.Unstructured); !ok {
+						return fmt.Errorf("object %s/%s has an unexpected type", un.GroupVersionKind().String(), un.GetName())
+					} else {
+						newRes := c.newResource(un)
+						c.lock.Lock()
+						c.setNode(newRes)
+						c.lock.Unlock()
+					}
+					return nil
+				})
+			})
+			if err != nil {
+				c.log.Error(err, "Failed to list resources in new namespace", "api", api.GroupKind.String(), "namespace", namespace)
+				continue
+			}
+
+			go c.watchEvents(ctx, api, resClient, namespace, resourceVersion)
+		} else {
+			c.lock.Unlock()
+		}
+	}
 
 	return nil
 }
