@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"maps"
 	"context"
 	"fmt"
 	"runtime/debug"
@@ -496,7 +497,7 @@ func (c *clusterCache) Invalidate(opts ...UpdateSettingsFunc) {
 }
 
 // AddNamespace incrementally syncs a new namespace to the cluster cache if incremental sync is enabled,
-// otherwise falls back to full invalidation
+// otherwise falls back to full cluster cache invalidation
 func (c *clusterCache) AddNamespace(namespace string) error {
 	if !c.incrementalNamespaceSync {
 		c.Invalidate(func(cache *clusterCache) {
@@ -507,13 +508,88 @@ func (c *clusterCache) AddNamespace(namespace string) error {
 
 	// Feature enabled: incremental sync
 	c.lock.Lock()
-	defer c.lock.Unlock()
-
-	// Add namespace to the list
 	c.namespaces = append(c.namespaces, namespace)
+	apisToSync := c.snapshotApisMeta()
+	c.lock.Unlock()
 
-	// TODO: For each already-watched API, start watching in the new namespace
-	// This will be implemented in the next iteration
+	return c.syncNamespaceResources(namespace, apisToSync)
+}
+
+func (c *clusterCache) snapshotApisMeta() map[schema.GroupKind]*apiMeta {
+	snapshot := make(map[schema.GroupKind]*apiMeta)
+	maps.Copy(snapshot, c.apisMeta)
+	return snapshot
+}
+
+// syncNamespaceResources lists and caches resources for the given namespace across all watched APIs
+func (c *clusterCache) syncNamespaceResources(namespace string, apisToSync map[schema.GroupKind]*apiMeta) error {
+	client, err := c.kubectl.NewDynamicClient(c.config)
+	if err != nil {
+		return fmt.Errorf("failed to create client: %w", err)
+	}
+
+	apiMap, err := c.buildAPIMap()
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	for gk, meta := range apisToSync {
+		if !meta.namespaced {
+			continue
+		}
+
+		api, exists := apiMap[gk]
+		if !exists {
+			continue
+		}
+
+		if err := c.loadNamespaceResources(ctx, client, api, namespace); err != nil {
+			// Ignore errors for resources we can't access
+			continue
+		}
+	}
+
+	return nil
+}
+
+// buildAPIMap creates a lookup map from GroupKind to APIResourceInfo
+func (c *clusterCache) buildAPIMap() (map[schema.GroupKind]kube.APIResourceInfo, error) {
+	apis, err := c.kubectl.GetAPIResources(c.config, true, c.settings.ResourcesFilter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get api resources: %w", err)
+	}
+
+	apiMap := make(map[schema.GroupKind]kube.APIResourceInfo)
+	for _, api := range apis {
+		apiMap[api.GroupKind] = api
+	}
+	return apiMap, nil
+}
+
+// loadNamespaceResources lists and caches all resources for a given API in a specific namespace,
+// and starts watching for changes
+func (c *clusterCache) loadNamespaceResources(ctx context.Context, client dynamic.Interface, api kube.APIResourceInfo, namespace string) error {
+	resClient := client.Resource(api.GroupVersionResource).Namespace(namespace)
+
+	resourceVersion, err := c.listResources(ctx, resClient, func(listPager *pager.ListPager) error {
+		return listPager.EachListItem(ctx, metav1.ListOptions{}, func(obj runtime.Object) error {
+			un, ok := obj.(*unstructured.Unstructured)
+			if !ok {
+				return fmt.Errorf("object %s/%s has an unexpected type", un.GroupVersionKind().String(), un.GetName())
+			}
+			newRes := c.newResource(un)
+			c.lock.Lock()
+			c.setNode(newRes)
+			c.lock.Unlock()
+			return nil
+		})
+	})
+	if err != nil {
+		return err
+	}
+
+	go c.watchEvents(ctx, api, resClient, namespace, resourceVersion)
 
 	return nil
 }
