@@ -2,11 +2,13 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -158,6 +160,50 @@ func TestAddNamespace(t *testing.T) {
 
 		// then: the new pod should be in the cache (proves watches are active)
 		assertPodInCache(t, cache, "new-namespace", "new-pod", "pod created after AddNamespace should be in cache (proves watches are active)")
+	})
+
+	t.Run("feature enabled returns error for non-RBAC errors", func(t *testing.T) {
+		// given: a fake cluster that returns generic errors (not RBAC)
+		client := fake.NewSimpleDynamicClient(scheme.Scheme)
+
+		// given: setup reactor to return generic error for "error-namespace"
+		client.PrependReactor("list", "pods", func(action testcore.Action) (handled bool, ret runtime.Object, err error) {
+			listAction := action.(testcore.ListAction)
+			if listAction.GetNamespace() == "error-namespace" {
+				return true, nil, apierrors.NewInternalError(fmt.Errorf("internal server error"))
+			}
+			return false, nil, nil
+		})
+
+		apiResources := []kube.APIResourceInfo{{
+			GroupKind:            schema.GroupKind{Group: "", Kind: "Pod"},
+			GroupVersionResource: schema.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"},
+			Meta:                 metav1.APIResource{Namespaced: true},
+		}}
+
+		mockKubectl := &kubetest.MockKubectlCmd{
+			DynamicClient: client,
+			APIResources:  apiResources,
+			Version:       "v1.28.0",
+		}
+
+		cache := NewClusterCache(
+			&rest.Config{},
+			SetKubectl(mockKubectl),
+			SetNamespaces([]string{"existing-namespace"}),
+			WithIncrementalNamespaceSync(true),
+			SetRespectRBAC(RespectRbacNormal),
+		)
+
+		// given: cache was previously synced
+		err := cache.EnsureSynced()
+		assert.NoError(t, err)
+
+		// when: adding a namespace with non-RBAC errors
+		err = cache.AddNamespace("error-namespace")
+
+		// then: should return error (only RBAC errors should be ignored)
+		assert.Error(t, err, "AddNamespace should return error for non-RBAC errors")
 	})
 }
 

@@ -545,8 +545,7 @@ func (c *clusterCache) syncNamespaceResources(namespace string, apisToSync map[s
 		}
 
 		if err := c.loadNamespaceResources(ctx, client, api, namespace); err != nil {
-			// Ignore errors for resources we can't access
-			continue
+			return fmt.Errorf("failed to load resources for %s in namespace %s: %w", gk.String(), namespace, err)
 		}
 	}
 
@@ -586,6 +585,9 @@ func (c *clusterCache) loadNamespaceResources(ctx context.Context, client dynami
 		})
 	})
 	if err != nil {
+		if c.isRestrictedResource(err) {
+			return nil
+		}
 		return err
 	}
 
