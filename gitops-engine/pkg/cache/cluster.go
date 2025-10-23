@@ -530,6 +530,13 @@ func (c *clusterCache) RemoveNamespace(namespace string) error {
 	// Feature enabled: incremental removal
 	c.lock.Lock()
 	c.namespaces = removeNamespaceFromList(c.namespaces, namespace)
+
+	// Remove all resources from the removed namespace
+	for key := range c.resources {
+		if key.Namespace == namespace {
+			delete(c.resources, key)
+		}
+	}
 	c.lock.Unlock()
 
 	return nil
