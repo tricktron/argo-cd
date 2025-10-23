@@ -1,9 +1,9 @@
 package cache
 
 import (
-	"maps"
 	"context"
 	"fmt"
+	"maps"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -522,18 +522,27 @@ func (c *clusterCache) AddNamespace(namespace string) error {
 func (c *clusterCache) RemoveNamespace(namespace string) error {
 	if !c.incrementalNamespaceSync {
 		c.Invalidate(func(cache *clusterCache) {
-			newNamespaces := make([]string, 0, len(cache.namespaces)-1)
-			for _, ns := range cache.namespaces {
-				if ns != namespace {
-					newNamespaces = append(newNamespaces, ns)
-				}
-			}
-			cache.namespaces = newNamespaces
+			cache.namespaces = removeNamespaceFromList(cache.namespaces, namespace)
 		})
 		return nil
 	}
 
+	// Feature enabled: incremental removal
+	c.lock.Lock()
+	c.namespaces = removeNamespaceFromList(c.namespaces, namespace)
+	c.lock.Unlock()
+
 	return nil
+}
+
+func removeNamespaceFromList(namespaces []string, namespace string) []string {
+	result := make([]string, 0, len(namespaces)-1)
+	for _, ns := range namespaces {
+		if ns != namespace {
+			result = append(result, ns)
+		}
+	}
+	return result
 }
 
 func (c *clusterCache) snapshotApisMeta() map[schema.GroupKind]*apiMeta {
