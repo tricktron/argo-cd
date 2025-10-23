@@ -130,6 +130,8 @@ type ClusterCache interface {
 	Invalidate(opts ...UpdateSettingsFunc)
 	// AddNamespace incrementally syncs a new namespace to the cluster cache if incremental sync is enabled, otherwise falls back to full invalidation
 	AddNamespace(namespace string) error
+	// RemoveNamespace incrementally removes a namespace from the cluster cache if incremental sync is enabled, otherwise falls back to full invalidation
+	RemoveNamespace(namespace string) error
 	// FindResources returns resources that matches given list of predicates from specified namespace or everywhere if specified namespace is empty
 	FindResources(namespace string, predicates ...func(r *Resource) bool) map[kube.ResourceKey]*Resource
 	// IterateHierarchyV2 iterates resource tree starting from the specified top level resources and executes callback for each resource in the tree.
@@ -513,6 +515,25 @@ func (c *clusterCache) AddNamespace(namespace string) error {
 	c.lock.Unlock()
 
 	return c.syncNamespaceResources(namespace, apisToSync)
+}
+
+// RemoveNamespace incrementally removes a namespace from the cluster cache if incremental sync is enabled,
+// otherwise falls back to full cluster cache invalidation
+func (c *clusterCache) RemoveNamespace(namespace string) error {
+	if !c.incrementalNamespaceSync {
+		c.Invalidate(func(cache *clusterCache) {
+			newNamespaces := make([]string, 0, len(cache.namespaces)-1)
+			for _, ns := range cache.namespaces {
+				if ns != namespace {
+					newNamespaces = append(newNamespaces, ns)
+				}
+			}
+			cache.namespaces = newNamespaces
+		})
+		return nil
+	}
+
+	return nil
 }
 
 func (c *clusterCache) snapshotApisMeta() map[schema.GroupKind]*apiMeta {

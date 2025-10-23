@@ -207,6 +207,37 @@ func TestAddNamespace(t *testing.T) {
 	})
 }
 
+func TestRemoveNamespace(t *testing.T) {
+	t.Run("feature disabled", func(t *testing.T) {
+		cache := NewClusterCache(
+			&rest.Config{},
+			SetKubectl(&kubetest.MockKubectlCmd{}),
+			SetNamespaces([]string{"ns-1", "ns-2"}),
+		)
+
+		// given: cache was previously synced
+		now := time.Now()
+		cache.syncStatus.lock.Lock()
+		cache.syncStatus.syncTime = &now
+		cache.syncStatus.lock.Unlock()
+
+		// when: removing a namespace with feature disabled
+		err := cache.RemoveNamespace("ns-2")
+
+		assert.NoError(t, err)
+
+		// then: should invalidate the cache (observable via syncTime being cleared)
+		cache.syncStatus.lock.Lock()
+		actual := cache.syncStatus.syncTime
+		cache.syncStatus.lock.Unlock()
+		assert.Nil(t, actual, "given feature disabled, should invalidate cache when namespace removed")
+
+		// then: should remove namespace from the list
+		assert.NotContains(t, cache.namespaces, "ns-2", "given feature disabled, should remove namespace from list")
+		assert.Contains(t, cache.namespaces, "ns-1", "given feature disabled, should preserve remaining namespaces")
+	})
+}
+
 func setupFakeCluster(objs ...runtime.Object) (*fake.FakeDynamicClient, *kubetest.MockKubectlCmd) {
 	client := fake.NewSimpleDynamicClient(scheme.Scheme, objs...)
 	reactor := client.ReactionChain[0]
