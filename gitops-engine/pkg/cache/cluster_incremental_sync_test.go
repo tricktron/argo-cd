@@ -368,6 +368,60 @@ func TestRemoveNamespace(t *testing.T) {
 		// Then: pod-1 from ns-1 should still be in cache
 		assertPodInCache(t, cache, "ns-1", "pod-1", "pod-1 from remaining namespace should still be in cache")
 	})
+
+	t.Run("feature enabled cancels watches when namespace removed", func(t *testing.T) {
+		// Given: pods exist in both namespaces
+		pod1 := &corev1.Pod{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "ns-1"},
+		}
+		pod2 := &corev1.Pod{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-2", Namespace: "ns-2"},
+		}
+
+		_, mockKubectl := setupFakeCluster(pod1, pod2)
+		cache := NewClusterCache(
+			&rest.Config{},
+			SetKubectl(mockKubectl),
+			SetNamespaces([]string{"ns-1"}),
+			WithIncrementalNamespaceSync(true),
+		)
+
+		// Given: cache was previously synced
+		err := cache.EnsureSynced()
+		assert.NoError(t, err)
+
+		// When: adding ns-2 with feature enabled (creates per-namespace context)
+		err = cache.AddNamespace("ns-2")
+		assert.NoError(t, err)
+
+		// Then: should have namespace cancel context for ns-2
+		cache.lock.RLock()
+		podMeta, exists := cache.apisMeta[schema.GroupKind{Group: "", Kind: "Pod"}]
+		cache.lock.RUnlock()
+		assert.True(t, exists, "Pod apiMeta should exist")
+
+		ns2Cancel, hasNs2Cancel := podMeta.namespaceCancels["ns-2"]
+		assert.True(t, hasNs2Cancel, "ns-2 should have a cancel function")
+		assert.NotNil(t, ns2Cancel, "ns-2 cancel function should not be nil")
+
+		// When: removing ns-2
+		err = cache.RemoveNamespace("ns-2")
+		assert.NoError(t, err)
+
+		// Then: ns-2 should be removed from namespaceCancels map
+		_, hasNs2Cancel = podMeta.namespaceCancels["ns-2"]
+		assert.False(t, hasNs2Cancel, "ns-2 should be removed from namespaceCancels after RemoveNamespace")
+
+		// Then: ns-1 should still have its cancel function (not affected)
+		cache.lock.RLock()
+		_, hasNs1Cancel := podMeta.namespaceCancels["ns-1"]
+		cache.lock.RUnlock()
+		// Note: ns-1 was added during initial sync, which doesn't create per-namespace contexts
+		// So this test verifies that RemoveNamespace only affects the removed namespace
+		assert.False(t, hasNs1Cancel, "ns-1 should not have per-namespace cancel (was added during sync)")
+	})
 }
 
 func setupFakeCluster(objs ...runtime.Object) (*fake.FakeDynamicClient, *kubetest.MockKubectlCmd) {
@@ -376,10 +430,10 @@ func setupFakeCluster(objs ...runtime.Object) (*fake.FakeDynamicClient, *kubetes
 	client.PrependReactor("list", "*", func(action testcore.Action) (handled bool, ret runtime.Object, err error) {
 		handled, ret, err = reactor.React(action)
 		if err != nil || !handled {
-			return
+			return handled, ret, err
 		}
 		ret.(metav1.ListInterface).SetResourceVersion("123")
-		return
+		return handled, ret, err
 	})
 
 	apiResources := []kube.APIResourceInfo{{

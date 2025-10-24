@@ -542,6 +542,15 @@ func (c *clusterCache) RemoveNamespace(namespace string) error {
 			delete(c.resources, key)
 		}
 	}
+
+	// Cancel watches for the removed namespace
+	for _, meta := range c.apisMeta {
+		if cancel, exists := meta.namespaceCancels[namespace]; exists {
+			cancel()
+			delete(meta.namespaceCancels, namespace)
+		}
+	}
+
 	c.lock.Unlock()
 
 	return nil
