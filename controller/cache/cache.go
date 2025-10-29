@@ -193,16 +193,18 @@ func NewLiveStateCache(
 	onObjectUpdated ObjectUpdatedHandler,
 	clusterSharding sharding.ClusterShardingCache,
 	resourceTracking argo.ResourceTracking,
+	enableIncrementalNamespaceSync bool,
 ) LiveStateCache {
 	return &liveStateCache{
-		appInformer:      appInformer,
-		db:               db,
-		clusters:         make(map[string]clustercache.ClusterCache),
-		onObjectUpdated:  onObjectUpdated,
-		settingsMgr:      settingsMgr,
-		metricsServer:    metricsServer,
-		clusterSharding:  clusterSharding,
-		resourceTracking: resourceTracking,
+		appInformer:                    appInformer,
+		db:                             db,
+		clusters:                       make(map[string]clustercache.ClusterCache),
+		onObjectUpdated:                onObjectUpdated,
+		settingsMgr:                    settingsMgr,
+		metricsServer:                  metricsServer,
+		clusterSharding:                clusterSharding,
+		resourceTracking:               resourceTracking,
+		enableIncrementalNamespaceSync: enableIncrementalNamespaceSync,
 	}
 }
 
@@ -227,6 +229,8 @@ type liveStateCache struct {
 	clusterSharding      sharding.ClusterShardingCache
 	resourceTracking     argo.ResourceTracking
 	ignoreNormalizerOpts normalizers.IgnoreNormalizerOpts
+	// enableIncrementalNamespaceSync configures all cluster caches with incremental namespace sync
+	enableIncrementalNamespaceSync bool
 
 	clusters      map[string]clustercache.ClusterCache
 	cacheSettings cacheSettings
@@ -571,6 +575,7 @@ func (c *liveStateCache) getCluster(cluster *appv1.Cluster) (clustercache.Cluste
 		clustercache.SetRespectRBAC(respectRBAC),
 		clustercache.SetBatchEventsProcessing(clusterCacheBatchEventsProcessing),
 		clustercache.SetEventProcessingInterval(clusterCacheEventsProcessingInterval),
+		clustercache.WithIncrementalNamespaceSync(c.enableIncrementalNamespaceSync),
 	}
 
 	clusterCache = clustercache.NewClusterCache(clusterCacheConfig, clusterCacheOpts...)
