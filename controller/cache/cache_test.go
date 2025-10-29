@@ -149,6 +149,116 @@ func TestHandleModEvent_NoChanges(_ *testing.T) {
 	})
 }
 
+func TestNamespaceDiff(t *testing.T) {
+	tests := []struct {
+		name          string
+		oldNamespaces []string
+		newNamespaces []string
+		wantAdded     []string
+		wantRemoved   []string
+	}{
+		{
+			name:          "no changes - identical lists",
+			oldNamespaces: []string{"ns1", "ns2"},
+			newNamespaces: []string{"ns1", "ns2"},
+			wantAdded:     nil,
+			wantRemoved:   nil,
+		},
+		{
+			name:          "no changes - different order",
+			oldNamespaces: []string{"ns1", "ns2"},
+			newNamespaces: []string{"ns2", "ns1"},
+			wantAdded:     nil,
+			wantRemoved:   nil,
+		},
+		{
+			name:          "namespace added",
+			oldNamespaces: []string{"ns1"},
+			newNamespaces: []string{"ns1", "ns2"},
+			wantAdded:     []string{"ns2"},
+			wantRemoved:   nil,
+		},
+		{
+			name:          "namespace removed",
+			oldNamespaces: []string{"ns1", "ns2"},
+			newNamespaces: []string{"ns1"},
+			wantAdded:     nil,
+			wantRemoved:   []string{"ns2"},
+		},
+		{
+			name:          "namespace added and removed",
+			oldNamespaces: []string{"ns1", "ns2"},
+			newNamespaces: []string{"ns1", "ns3"},
+			wantAdded:     []string{"ns3"},
+			wantRemoved:   []string{"ns2"},
+		},
+		{
+			name:          "multiple namespaces added",
+			oldNamespaces: []string{"ns1"},
+			newNamespaces: []string{"ns1", "ns2", "ns3"},
+			wantAdded:     []string{"ns2", "ns3"},
+			wantRemoved:   nil,
+		},
+		{
+			name:          "multiple namespaces removed",
+			oldNamespaces: []string{"ns1", "ns2", "ns3"},
+			newNamespaces: []string{"ns1"},
+			wantAdded:     nil,
+			wantRemoved:   []string{"ns2", "ns3"},
+		},
+		{
+			name:          "empty to non-empty",
+			oldNamespaces: []string{},
+			newNamespaces: []string{"ns1", "ns2"},
+			wantAdded:     []string{"ns1", "ns2"},
+			wantRemoved:   nil,
+		},
+		{
+			name:          "non-empty to empty",
+			oldNamespaces: []string{"ns1", "ns2"},
+			newNamespaces: []string{},
+			wantAdded:     nil,
+			wantRemoved:   []string{"ns1", "ns2"},
+		},
+		{
+			name:          "both empty",
+			oldNamespaces: []string{},
+			newNamespaces: []string{},
+			wantAdded:     nil,
+			wantRemoved:   nil,
+		},
+		{
+			name:          "nil old namespaces",
+			oldNamespaces: nil,
+			newNamespaces: []string{"ns1"},
+			wantAdded:     []string{"ns1"},
+			wantRemoved:   nil,
+		},
+		{
+			name:          "nil new namespaces",
+			oldNamespaces: []string{"ns1"},
+			newNamespaces: nil,
+			wantAdded:     nil,
+			wantRemoved:   []string{"ns1"},
+		},
+		{
+			name:          "both nil",
+			oldNamespaces: nil,
+			newNamespaces: nil,
+			wantAdded:     nil,
+			wantRemoved:   nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			added, removed := namespaceDiff(tt.oldNamespaces, tt.newNamespaces)
+			assert.ElementsMatch(t, tt.wantAdded, added, "added namespaces don't match")
+			assert.ElementsMatch(t, tt.wantRemoved, removed, "removed namespaces don't match")
+		})
+	}
+}
+
 func TestHandleModEvent_IncrementalNamespaceSync(t *testing.T) {
 	tests := []struct {
 		name                           string
