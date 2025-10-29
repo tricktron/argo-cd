@@ -885,16 +885,25 @@ func (c *liveStateCache) handleModEvent(oldCluster *appv1.Cluster, newCluster *a
 			if c.enableIncrementalNamespaceSync {
 				added, removed := namespaceDiff(oldCluster.Namespaces, newCluster.Namespaces)
 
+				hasErrors := false
 				for _, ns := range added {
 					if err := cluster.AddNamespace(ns); err != nil {
 						log.Warnf("Failed to incrementally add namespace %s: %v", ns, err)
+						hasErrors = true
 					}
 				}
 
 				for _, ns := range removed {
 					if err := cluster.RemoveNamespace(ns); err != nil {
 						log.Warnf("Failed to incrementally remove namespace %s: %v", ns, err)
+						hasErrors = true
 					}
+				}
+
+				// If any incremental operation failed, fall back to full cache invalidation
+				if hasErrors {
+					log.Warnf("Incremental namespace sync failed, falling back to full cache invalidation")
+					updateSettings = append(updateSettings, clustercache.SetNamespaces(newCluster.Namespaces))
 				}
 			} else {
 				// Fall back to full cluster cache invalidation
