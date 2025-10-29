@@ -148,6 +148,55 @@ func TestHandleModEvent_NoChanges(_ *testing.T) {
 	})
 }
 
+func TestHandleModEvent_NamespaceAdded_IncrementalSync(t *testing.T) {
+	clusterCache := &mocks.ClusterCache{}
+	clusterCache.On("AddNamespace", "new-namespace").Return(nil).Once()
+	db := &dbmocks.ArgoDB{}
+	db.On("GetApplicationControllerReplicas").Return(1)
+	clustersCache := liveStateCache{
+		clusters: map[string]cache.ClusterCache{
+			"https://mycluster": clusterCache,
+		},
+		clusterSharding:                sharding.NewClusterSharding(db, 0, 1, common.DefaultShardingAlgorithm),
+		enableIncrementalNamespaceSync: true, // Feature flag enabled
+	}
+
+	clustersCache.handleModEvent(&appv1.Cluster{
+		Server:     "https://mycluster",
+		Namespaces: []string{"existing-namespace"},
+	}, &appv1.Cluster{
+		Server:     "https://mycluster",
+		Namespaces: []string{"existing-namespace", "new-namespace"},
+	})
+
+	clusterCache.AssertExpectations(t)
+}
+
+func TestHandleModEvent_NamespaceRemoved_IncrementalSync(t *testing.T) {
+	clusterCache := &mocks.ClusterCache{}
+	clusterCache.On("RemoveNamespace", "removed-namespace").Return(nil).Once()
+
+	db := &dbmocks.ArgoDB{}
+	db.On("GetApplicationControllerReplicas").Return(1)
+	clustersCache := liveStateCache{
+		clusters: map[string]cache.ClusterCache{
+			"https://mycluster": clusterCache,
+		},
+		clusterSharding:                sharding.NewClusterSharding(db, 0, 1, common.DefaultShardingAlgorithm),
+		enableIncrementalNamespaceSync: true, // Feature flag enabled
+	}
+
+	clustersCache.handleModEvent(&appv1.Cluster{
+		Server:     "https://mycluster",
+		Namespaces: []string{"existing-namespace", "removed-namespace"},
+	}, &appv1.Cluster{
+		Server:     "https://mycluster",
+		Namespaces: []string{"existing-namespace"},
+	})
+
+	clusterCache.AssertExpectations(t)
+}
+
 func TestHandleAddEvent_ClusterExcluded(t *testing.T) {
 	db := &dbmocks.ArgoDB{}
 	db.On("GetApplicationControllerReplicas").Return(1)
