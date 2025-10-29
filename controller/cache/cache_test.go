@@ -149,152 +149,92 @@ func TestHandleModEvent_NoChanges(_ *testing.T) {
 	})
 }
 
-func TestHandleModEvent_NamespaceAdded_IncrementalSync(t *testing.T) {
-	clusterCache := &mocks.ClusterCache{}
-	clusterCache.On("AddNamespace", "new-namespace").Return(nil).Once()
-	db := &dbmocks.ArgoDB{}
-	db.On("GetApplicationControllerReplicas").Return(1)
-	clustersCache := liveStateCache{
-		clusters: map[string]cache.ClusterCache{
-			"https://mycluster": clusterCache,
+func TestHandleModEvent_IncrementalNamespaceSync(t *testing.T) {
+	tests := []struct {
+		name                           string
+		enableIncrementalNamespaceSync bool
+		oldNamespaces                  []string
+		newNamespaces                  []string
+		setupMocks                     func(*mocks.ClusterCache)
+	}{
+		{
+			name:                           "namespace added with incremental sync enabled",
+			enableIncrementalNamespaceSync: true,
+			oldNamespaces:                  []string{"existing-namespace"},
+			newNamespaces:                  []string{"existing-namespace", "new-namespace"},
+			setupMocks: func(clusterCache *mocks.ClusterCache) {
+				clusterCache.On("AddNamespace", "new-namespace").Return(nil).Once()
+			},
 		},
-		clusterSharding:                sharding.NewClusterSharding(db, 0, 1, common.DefaultShardingAlgorithm),
-		enableIncrementalNamespaceSync: true, // Feature flag enabled
+		{
+			name:                           "namespace removed with incremental sync enabled",
+			enableIncrementalNamespaceSync: true,
+			oldNamespaces:                  []string{"existing-namespace", "removed-namespace"},
+			newNamespaces:                  []string{"existing-namespace"},
+			setupMocks: func(clusterCache *mocks.ClusterCache) {
+				clusterCache.On("RemoveNamespace", "removed-namespace").Return(nil).Once()
+			},
+		},
+		{
+			name:                           "namespace added and removed with incremental sync enabled",
+			enableIncrementalNamespaceSync: true,
+			oldNamespaces:                  []string{"existing-namespace", "removed-namespace"},
+			newNamespaces:                  []string{"existing-namespace", "added-namespace"},
+			setupMocks: func(clusterCache *mocks.ClusterCache) {
+				clusterCache.On("AddNamespace", "added-namespace").Return(nil).Once()
+				clusterCache.On("RemoveNamespace", "removed-namespace").Return(nil).Once()
+			},
+		},
+		{
+			name:                           "incremental namespace sync fails and falls back to invalidate",
+			enableIncrementalNamespaceSync: true,
+			oldNamespaces:                  []string{"existing-namespace"},
+			newNamespaces:                  []string{"existing-namespace", "new-namespace"},
+			setupMocks: func(clusterCache *mocks.ClusterCache) {
+				clusterCache.On("AddNamespace", "new-namespace").Return(fmt.Errorf("simulated error")).Once()
+				clusterCache.On("Invalidate", mock.Anything).Return().Once()
+				clusterCache.On("EnsureSynced").Return(nil).Maybe()
+				clusterCache.On("GetClusterInfo").Return(cache.ClusterInfo{}).Maybe()
+			},
+		},
+		{
+			name:                           "namespace changed with incremental sync disabled still works",
+			enableIncrementalNamespaceSync: false,
+			oldNamespaces:                  []string{"old-namespace"},
+			newNamespaces:                  []string{"new-namespace"},
+			setupMocks: func(clusterCache *mocks.ClusterCache) {
+				clusterCache.On("Invalidate", mock.Anything).Return().Once()
+				clusterCache.On("EnsureSynced").Return(nil).Maybe()
+				clusterCache.On("GetClusterInfo").Return(cache.ClusterInfo{}).Maybe()
+			},
+		},
 	}
 
-	clustersCache.handleModEvent(&appv1.Cluster{
-		Server:     "https://mycluster",
-		Namespaces: []string{"existing-namespace"},
-	}, &appv1.Cluster{
-		Server:     "https://mycluster",
-		Namespaces: []string{"existing-namespace", "new-namespace"},
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clusterCache := &mocks.ClusterCache{}
+			tt.setupMocks(clusterCache)
+			db := &dbmocks.ArgoDB{}
+			db.On("GetApplicationControllerReplicas").Return(1)
+			clustersCache := liveStateCache{
+				clusters: map[string]cache.ClusterCache{
+					"https://mycluster": clusterCache,
+				},
+				clusterSharding:                sharding.NewClusterSharding(db, 0, 1, common.DefaultShardingAlgorithm),
+				enableIncrementalNamespaceSync: tt.enableIncrementalNamespaceSync,
+			}
 
-	clusterCache.AssertExpectations(t)
-}
+			clustersCache.handleModEvent(&appv1.Cluster{
+				Server:     "https://mycluster",
+				Namespaces: tt.oldNamespaces,
+			}, &appv1.Cluster{
+				Server:     "https://mycluster",
+				Namespaces: tt.newNamespaces,
+			})
 
-func TestHandleModEvent_NamespaceRemoved_IncrementalSync(t *testing.T) {
-	clusterCache := &mocks.ClusterCache{}
-	clusterCache.On("RemoveNamespace", "removed-namespace").Return(nil).Once()
-
-	db := &dbmocks.ArgoDB{}
-	db.On("GetApplicationControllerReplicas").Return(1)
-	clustersCache := liveStateCache{
-		clusters: map[string]cache.ClusterCache{
-			"https://mycluster": clusterCache,
-		},
-		clusterSharding:                sharding.NewClusterSharding(db, 0, 1, common.DefaultShardingAlgorithm),
-		enableIncrementalNamespaceSync: true, // Feature flag enabled
+			clusterCache.AssertExpectations(t)
+		})
 	}
-
-	clustersCache.handleModEvent(&appv1.Cluster{
-		Server:     "https://mycluster",
-		Namespaces: []string{"existing-namespace", "removed-namespace"},
-	}, &appv1.Cluster{
-		Server:     "https://mycluster",
-		Namespaces: []string{"existing-namespace"},
-	})
-
-	clusterCache.AssertExpectations(t)
-}
-
-// TestHandleModEvent_NamespaceAddRemove_IncrementalSync verifies that when incremental
-// namespace sync is enabled, both adding and removing namespaces works correctly
-func TestHandleModEvent_NamespaceAddRemove_IncrementalSync(t *testing.T) {
-	// Given: A cluster cache with incremental namespace sync enabled
-	clusterCache := &mocks.ClusterCache{}
-	clusterCache.On("AddNamespace", "added-namespace").Return(nil).Once()
-	clusterCache.On("RemoveNamespace", "removed-namespace").Return(nil).Once()
-
-	db := &dbmocks.ArgoDB{}
-	db.On("GetApplicationControllerReplicas").Return(1)
-	clustersCache := liveStateCache{
-		clusters: map[string]cache.ClusterCache{
-			"https://mycluster": clusterCache,
-		},
-		clusterSharding:                sharding.NewClusterSharding(db, 0, 1, common.DefaultShardingAlgorithm),
-		enableIncrementalNamespaceSync: true, // Feature flag enabled
-	}
-
-	// When: Both namespaces are added and removed
-	clustersCache.handleModEvent(&appv1.Cluster{
-		Server:     "https://mycluster",
-		Namespaces: []string{"existing-namespace", "removed-namespace"},
-	}, &appv1.Cluster{
-		Server:     "https://mycluster",
-		Namespaces: []string{"existing-namespace", "added-namespace"},
-	})
-
-	// Then: Both AddNamespace and RemoveNamespace should be called
-	clusterCache.AssertExpectations(t)
-}
-
-// TestHandleModEvent_NamespaceError_FallbackToInvalidate verifies that when incremental
-// namespace operations fail, the cache falls back to full invalidation
-func TestHandleModEvent_NamespaceError_FallbackToInvalidate(t *testing.T) {
-	// Given: A cluster cache where AddNamespace will fail
-	clusterCache := &mocks.ClusterCache{}
-	clusterCache.On("AddNamespace", "new-namespace").Return(fmt.Errorf("simulated error")).Once()
-	// Invalidate will be called with SetNamespaces as fallback
-	clusterCache.On("Invalidate", mock.Anything).Return().Once()
-	clusterCache.On("EnsureSynced").Return(nil).Maybe()
-	clusterCache.On("GetClusterInfo").Return(cache.ClusterInfo{}).Maybe()
-
-	db := &dbmocks.ArgoDB{}
-	db.On("GetApplicationControllerReplicas").Return(1)
-	clustersCache := liveStateCache{
-		clusters: map[string]cache.ClusterCache{
-			"https://mycluster": clusterCache,
-		},
-		clusterSharding:                sharding.NewClusterSharding(db, 0, 1, common.DefaultShardingAlgorithm),
-		enableIncrementalNamespaceSync: true, // Feature flag enabled
-	}
-
-	// When: Namespace operation fails
-	clustersCache.handleModEvent(&appv1.Cluster{
-		Server:     "https://mycluster",
-		Namespaces: []string{"existing-namespace"},
-	}, &appv1.Cluster{
-		Server:     "https://mycluster",
-		Namespaces: []string{"existing-namespace", "new-namespace"},
-	})
-
-	// Then: Invalidate should be called with settings as fallback
-	clusterCache.AssertExpectations(t)
-}
-
-// TestHandleModEvent_NamespaceChanged_FlagDisabled verifies that when incremental
-// namespace sync is disabled, the cache uses SetNamespaces via Invalidate
-func TestHandleModEvent_NamespaceChanged_FlagDisabled(t *testing.T) {
-	// Given: A cluster cache with incremental namespace sync DISABLED
-	clusterCache := &mocks.ClusterCache{}
-	// No AddNamespace/RemoveNamespace calls expected
-	// Invalidate will be called with SetNamespaces
-	clusterCache.On("Invalidate", mock.Anything).Return().Once()
-	clusterCache.On("EnsureSynced").Return(nil).Maybe()
-	clusterCache.On("GetClusterInfo").Return(cache.ClusterInfo{}).Maybe()
-
-	db := &dbmocks.ArgoDB{}
-	db.On("GetApplicationControllerReplicas").Return(1)
-	clustersCache := liveStateCache{
-		clusters: map[string]cache.ClusterCache{
-			"https://mycluster": clusterCache,
-		},
-		clusterSharding:                sharding.NewClusterSharding(db, 0, 1, common.DefaultShardingAlgorithm),
-		enableIncrementalNamespaceSync: false, // Feature flag DISABLED
-	}
-
-	// When: Namespace changes
-	clustersCache.handleModEvent(&appv1.Cluster{
-		Server:     "https://mycluster",
-		Namespaces: []string{"old-namespace"},
-	}, &appv1.Cluster{
-		Server:     "https://mycluster",
-		Namespaces: []string{"new-namespace"},
-	})
-
-	// Then: No incremental operations should be called, Invalidate is called with SetNamespaces
-	clusterCache.AssertExpectations(t)
 }
 
 func TestHandleAddEvent_ClusterExcluded(t *testing.T) {
